@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Scan outputs produced by running the tool (never commit real scan results)
+scan-results.xml
+advanced-scan-results.xml
+scan-summary.txt
+scan-summary.md
+*.nmap
+*.gnmap

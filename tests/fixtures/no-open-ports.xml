@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fictional fixture only: TEST-NET-3 address (RFC 5737), not a real scan. -->
+<nmaprun scanner="nmap" args="nmap -sT -oX - 203.0.113.20" start="1771236000" startstr="Mon Feb 16 10:00:00 2026" version="7.95" xmloutputversion="1.05">
+<scaninfo type="connect" protocol="tcp" numservices="1000" services="1-1000"/>
+<host><status state="up" reason="conn-refused"/><address addr="203.0.113.20" addrtype="ipv4"/><ports><extraports state="closed" count="1000"><extrareasons reason="conn-refused" count="1000"/></extraports></ports></host>
+<runstats><finished time="1771236010" timestr="Mon Feb 16 10:00:10 2026" elapsed="10.00" exit="success"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>

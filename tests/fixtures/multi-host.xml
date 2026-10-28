@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fictional fixture only: TEST-NET-3 addresses (RFC 5737), not a real scan. -->
+<nmaprun scanner="nmap" args="nmap -A -sV -oX - 203.0.113.10 203.0.113.11" start="1771236000" startstr="Mon Feb 16 10:00:00 2026" version="7.95" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="1000" services="1-1000"/>
+<scaninfo type="service" protocol="tcp" numservices="1000" services="1-1000"/>
+<host starttime="1771236000" endtime="1771236060">
+<status state="up" reason="syn-ack" reason_ttl="64"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<hostnames><hostname name="example-a.test" type="user"/></hostnames>
+<ports>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" product="OpenSSH" version="9.0" extrainfo="protocol 2.0"><cpe>cpe:/a:openbsd:openssh:9.0</cpe></service></port>
+<port protocol="tcp" portid="80"><state state="filtered" reason="no-response" reason_ttl="0"/><service name="http"/></port>
+<port protocol="tcp" portid="443"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="https" product="nginx" version="1.24.0"/><script id="http-title" output="Example Site"/></port>
+<extraports state="closed" count="997"><extrareasons reason="conn-refused" count="997"/></extraports>
+</ports>
+<os><osmatch name="Linux 5.15" accuracy="98" line="12345"><osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="5.X" accuracy="98"/></osmatch></os>
+<uptime seconds="86400" lastboot="Sun Feb 15 10:00:00 2026"/>
+<trace port="80" proto="tcp"><hop ttl="1" ipaddr="192.0.2.1" rtt="1.20" host="gateway.test"/><hop ttl="2" ipaddr="203.0.113.10" rtt="12.40" host="example-a.test"/></trace>
+</host>
+<host starttime="1771236000" endtime="1771236005">
+<status state="down" reason="no-response" reason_ttl="0"/>
+<address addr="203.0.113.11" addrtype="ipv4"/>
+</host>
+<runstats><finished time="1771236060" timestr="Mon Feb 16 10:01:00 2026" elapsed="60.00" summary="Nmap done at Mon Feb 16 10:01:00 2026; 2 IP addresses (1 host up) scanned in 60.00 seconds" exit="success"/><hosts up="1" down="1" total="2"/></runstats>
+</nmaprun>
