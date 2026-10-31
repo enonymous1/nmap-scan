@@ -16,6 +16,7 @@
 <os><osmatch name="Linux 5.15" accuracy="98" line="12345"><osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="5.X" accuracy="98"/></osmatch></os>
 <uptime seconds="86400" lastboot="Sun Feb 15 10:00:00 2026"/>
 <trace port="80" proto="tcp"><hop ttl="1" ipaddr="192.0.2.1" rtt="1.20" host="gateway.test"/><hop ttl="2" ipaddr="203.0.113.10" rtt="12.40" host="example-a.test"/></trace>
+<script id="smb-os-discovery" output="OS: Linux 5.15"/>
 </host>
 <host starttime="1771236000" endtime="1771236005">
 <status state="down" reason="no-response" reason_ttl="0"/>

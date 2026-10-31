@@ -12,15 +12,21 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Union
 
 from .errors import NmapParseError
 
-_XMLPath = Union[str, Path]
+_XMLPath = str | Path
 
 
 @dataclass
 class Service:
+    """A service detected on one port.
+
+    `name` is Nmap's service name (e.g. "ssh"). `product` and `version`
+    come from version detection and are only present when the scan
+    asked for them; their absence means "not detected", not "none".
+    """
+
     name: str | None = None
     product: str | None = None
     version: str | None = None
@@ -84,6 +90,17 @@ class TraceHop:
 
 @dataclass
 class Host:
+    """One host from an Nmap scan.
+
+    `address` is the primary address: the IPv4 address when the host
+    has one, otherwise the first address Nmap reported. `addresses`
+    keeps every address because a host can be reached over IPv4 and
+    IPv6, and dropping the second one would make the report lie about
+    which interface was scanned. `host_scripts` holds scripts that ran
+    against the host itself (e.g. OS/SMB discovery), as distinct from
+    the per-port scripts on each `Port`.
+    """
+
     address: str
     addresses: list[str] = field(default_factory=list)
     address_types: dict[str, str] = field(default_factory=dict)
@@ -93,10 +110,17 @@ class Host:
     ports: list[Port] = field(default_factory=list)
     extraports: list[ExtraPorts] = field(default_factory=list)
     os_matches: list[OsMatch] = field(default_factory=list)
+    host_scripts: list[ScriptResult] = field(default_factory=list)
     uptime_seconds: int | None = None
     trace: list[TraceHop] = field(default_factory=list)
 
     def open_ports(self) -> list[Port]:
+        """Ports whose state is exactly "open".
+
+        "open|filtered" is deliberately excluded: it is not an open
+        port, it is an uncertain one, and counting it as open would
+        overstate the result.
+        """
         return [p for p in self.ports if p.state == "open"]
 
 
@@ -120,6 +144,14 @@ class RunStats:
 
 @dataclass
 class ScanResult:
+    """A complete, parsed Nmap run.
+
+    Times are ISO-8601 UTC strings derived from Nmap's epoch attributes,
+    not the locale-dependent `startstr` text — see `_time_string`.
+    An empty `hosts` list is a valid result (e.g. a scan that found
+    nothing), not an error; callers must not treat it as one.
+    """
+
     nmap_version: str | None = None
     args: str | None = None
     start_time: str | None = None
@@ -131,7 +163,58 @@ class ScanResult:
         return asdict(self)
 
 
+def filter_result(
+    result: ScanResult,
+    *,
+    open_only: bool = False,
+    host: str | None = None,
+) -> ScanResult:
+    """Return a filtered copy of a parsed scan, for large scans.
+
+    This is a pure function on the parsed result, so the library gets
+    it for free and the CLI is a thin wrapper around it. Filtering
+    never rewrites run statistics: they describe the original scan,
+    and changing them to match the filter would make the report lie
+    about what was scanned.
+    """
+    hosts = result.hosts
+    if host is not None:
+        hosts = [h for h in hosts if h.address == host or host in h.hostnames]
+    if open_only:
+        hosts = [
+            Host(
+                address=h.address,
+                addresses=h.addresses,
+                address_types=h.address_types,
+                hostnames=h.hostnames,
+                status=h.status,
+                status_reason=h.status_reason,
+                ports=h.open_ports(),
+                extraports=h.extraports,
+                os_matches=h.os_matches,
+                host_scripts=h.host_scripts,
+                uptime_seconds=h.uptime_seconds,
+                trace=h.trace,
+            )
+            for h in hosts
+        ]
+    return ScanResult(
+        nmap_version=result.nmap_version,
+        args=result.args,
+        start_time=result.start_time,
+        scaninfo=result.scaninfo,
+        hosts=hosts,
+        runstats=result.runstats,
+    )
+
+
 def _int_or_none(value: str | None) -> int | None:
+    """Parse an integer attribute, returning None instead of raising.
+
+    Malformed numeric attributes in a real Nmap file are a data-quality
+    problem, not a reason to discard the whole scan, so the parser
+    degrades to None and the renderer omits the field.
+    """
     if value is None:
         return None
     try:
@@ -141,6 +224,10 @@ def _int_or_none(value: str | None) -> int | None:
 
 
 def _float_or_none(value: str | None) -> float | None:
+    """Parse a float attribute, returning None instead of raising.
+
+    See `_int_or_none` for why malformed numbers degrade to None.
+    """
     if value is None:
         return None
     try:
@@ -256,6 +343,16 @@ def _parse_host(element: ET.Element) -> Host:
     if uptime_el is not None:
         uptime_seconds = _int_or_none(uptime_el.get("seconds"))
 
+    # Host-level scripts (e.g. smb-os-discovery) live directly under
+    # <host>, not under <ports>. They were dropped before v2.0.1;
+    # dropping them made reports claim full script coverage they did
+    # not have.
+    host_scripts = [
+        ScriptResult(script_id=s.get("id", ""), output=s.get("output", ""))
+        for s in element.findall("script")
+        if s.get("id")
+    ]
+
     trace: list[TraceHop] = []
     trace_el = element.find("trace")
     if trace_el is not None:
@@ -279,6 +376,7 @@ def _parse_host(element: ET.Element) -> Host:
         ports=ports,
         extraports=extraports,
         os_matches=os_matches,
+        host_scripts=host_scripts,
         uptime_seconds=uptime_seconds,
         trace=trace,
     )
@@ -351,5 +449,18 @@ def parse_file(path: _XMLPath) -> ScanResult:
 
 
 def parse_nmap_xml(xml_file_path: _XMLPath) -> ScanResult:
-    """Backwards-compatible name for :func:`parse_file` (v1 returned a string)."""
+    """Deprecated alias for :func:`parse_file`.
+
+    The name is backwards-compatible with v1; the return type is not —
+    v1 returned a Markdown string, v2 returns a `ScanResult`. Use
+    `parse_file` for new code. This alias will be removed in v3.0.0.
+    """
+    import warnings
+
+    warnings.warn(
+        "parse_nmap_xml is deprecated, use parse_file instead; "
+        "it will be removed in v3.0.0.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return parse_file(xml_file_path)

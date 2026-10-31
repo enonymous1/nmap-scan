@@ -16,9 +16,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
       - name: Install Nmap (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y nmap
+      - name: Install Nmap (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nmap -y
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
+      - run: mypy src
       - run: pytest -q

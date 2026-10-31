@@ -1,21 +1,34 @@
 """Command-line interface: ``nmap-scan scan`` and ``nmap-scan parse``.
 
 Parsing is standard-library only, so ``nmap-scan parse`` works without
-the ``python-nmap`` dependency or the ``nmap`` binary. The scanner is
-imported lazily, inside the scan command, so ``--help`` and ``parse``
+the ``python-nmap`` dependency or the ``nmap`` binary. The scanner
+module itself is also standard-library only; only the `nmap` package
+import is lazy, inside the scan command, so ``--help`` and ``parse``
 never fail for a missing scanner dependency (the v1 ``--help`` bug).
+
+Exit codes (documented here because they are part of the interface):
+0 = success. 1 = a scan ran and failed, or a scan output file could
+not be written. 2 = a usage error (argparse, an invalid profile or
+timeout, or a parse input failure). The authorization warning goes to
+stderr so stdout stays machine-readable when a JSON summary is piped
+to another tool — do not move it to stdout in a tidy-up.
+
+``--output`` and ``--summary-output`` overwrite an existing file
+without asking. That is the documented policy: this is a local tool,
+and a prompt would break scripting. Check before reusing a filename
+you care about.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from . import __version__
 from .errors import NmapParseError, NmapScanError
-from .parser import parse_file, parse_string
+from .parser import filter_result, parse_file, parse_string
 from .reporting import render
+from .scanner import write_text_file
 
 AUTHORIZATION_WARNING = (
     "Only scan systems you own or have explicit permission to scan. "
@@ -97,6 +110,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the report to this file instead of stdout.",
     )
     parse.add_argument(
+        "--open-only",
+        action="store_true",
+        help="Only include hosts' open ports in the report.",
+    )
+    parse.add_argument(
+        "--host",
+        default=None,
+        help="Only include this host address or hostname in the report.",
+    )
+    parse.add_argument(
         "--indent",
         type=int,
         default=2,
@@ -106,11 +129,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _emit(text: str, output: str | None) -> None:
+    """Print text, or write it to a file (creating parents as needed)."""
     if output:
-        path = Path(output)
-        if path.parent != Path("."):
-            path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path = write_text_file(text, output)
         print(f"Report saved to {path}")
     else:
         print(text, end="" if text.endswith("\n") else "\n")
@@ -126,8 +147,14 @@ def _run_scan(args: argparse.Namespace) -> int:
             confirm_aggressive=args.confirm_aggressive,
         )
     except NmapScanError as exc:
+        # Invalid profile or arguments is a usage error, not a scan
+        # failure, so it exits 2 like an argparse error.
         print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        return 2
+
+    if args.timeout < 0:
+        print(f"Error: scan timeout must not be negative: {args.timeout}", file=sys.stderr)
+        return 2
 
     if args.dry_run:
         print(dry_run_command(args.target, arguments, args.ports))
@@ -169,6 +196,10 @@ def _run_scan(args: argparse.Namespace) -> int:
 
 
 def _run_parse(args: argparse.Namespace) -> int:
+    """Render an Nmap XML file. Exit 2 on any input or output failure."""
+    if args.indent < 0:
+        print(f"Error: JSON indent must not be negative: {args.indent}", file=sys.stderr)
+        return 2
     try:
         if args.input == "-":
             result = parse_string(sys.stdin.read())
@@ -177,6 +208,7 @@ def _run_parse(args: argparse.Namespace) -> int:
     except NmapParseError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    result = filter_result(result, open_only=args.open_only, host=args.host)
     try:
         _emit(render(result, args.format, indent=args.indent), args.output)
     except OSError as exc:
@@ -189,6 +221,7 @@ def _run_parse(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse arguments and run the chosen subcommand."""
     args = _build_parser().parse_args(argv)
     if args.command == "scan":
         return _run_scan(args)
@@ -196,4 +229,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def entrypoint() -> None:
+    """Console-script entry point: exit with the subcommand's code."""
     sys.exit(main())

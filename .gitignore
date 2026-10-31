@@ -17,3 +17,4 @@ scan-summary.txt
 scan-summary.md
 *.nmap
 *.gnmap
+*.tmp

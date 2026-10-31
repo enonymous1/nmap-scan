@@ -63,7 +63,7 @@ def test_scan_dry_run_runs_nothing(capsys):
 
 
 def test_scan_aggressive_without_confirmation_fails(capsys):
-    assert main(["scan", "--target", "203.0.113.10", "--profile", "aggressive"]) == 1
+    assert main(["scan", "--target", "203.0.113.10", "--profile", "aggressive"]) == 2
     assert "confirm-aggressive" in capsys.readouterr().err
 
 
@@ -112,4 +112,4 @@ def test_entrypoint_via_subprocess():
         check=False,
     )
     assert result.returncode == 0
-    assert "2.0.0" in result.stdout
+    assert "2.0.1" in result.stdout

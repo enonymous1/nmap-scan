@@ -5,6 +5,12 @@ explicitly; nothing silently escalates to an aggressive scan. Custom
 arguments are validated before they reach Nmap: options that would make
 Nmap write its own output files are rejected, because this wrapper owns
 the XML output and python-nmap already forces ``-oX -``.
+
+Trust boundary: `nmap-scan` trusts its operator. `--scan-args` is
+operator input, not untrusted input. Do not expose this tool, or its
+arguments, through a web service, API, or queue without an allowlist
+in front of it — the validator below is a local-operator guard, not a
+sandbox.
 """
 
 from __future__ import annotations
@@ -12,9 +18,10 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Union
+from typing import Protocol
 
 from .errors import NmapScanError
 
@@ -27,11 +34,16 @@ _BLOCKED_TOKENS = {
     "-oA",
     "-oX",
     "--append-output",
+    "--resume",
 }
 _BLOCKED_PREFIXES = ("-oN", "-oG", "-oS", "-oA", "-oX", "--append-output=")
+# Long options Nmap may accept in abbreviated form. A token that is a
+# prefix of one of these is rejected too, because Nmap could interpret
+# it as the full option.
+_BLOCKED_LONG_PREFIXES = ("--append-output", "--resume")
+_OUTPUT_LETTERS = set("XNGAS")  # Nmap -oX/-oN/-oG/-oA/-oS
 
 PROFILES = {
-    "default": None,  # resolved from privilege: -sS privileged, -sT otherwise
     "connect": "-sT",
     "syn": "-sS",
     "service": "-sV",
@@ -45,6 +57,29 @@ class ScanRun:
     arguments: str
     xml: str
     command_line: str
+
+
+class Scanner(Protocol):
+    """The subset of python-nmap's PortScanner this module uses.
+
+    Why a Protocol and not the concrete class: the scanner is an
+    external dependency, and tests substitute a fake. Depending on the
+    protocol keeps the fake honest — it must implement exactly these
+    three methods — without importing python-nmap at module load time,
+    which would break `parse` in environments without it.
+    """
+
+    def scan(
+        self,
+        hosts: str,
+        ports: str | None,
+        arguments: str,
+        timeout: int = 0,
+    ) -> object: ...
+
+    def get_nmap_last_output(self) -> bytes | str: ...
+
+    def command_line(self) -> str: ...
 
 
 def is_privileged() -> bool:
@@ -61,13 +96,21 @@ def is_privileged() -> bool:
     try:
         import ctypes
 
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
     except Exception:
         return False
 
 
 def validate_scan_args(arguments: str) -> list[str]:
-    """Split custom Nmap arguments and reject output-redirecting ones."""
+    """Split custom Nmap arguments and reject output-redirecting ones.
+
+    This is a local-operator guard, not a sandbox. A single-dash token
+    is a bundle of short options (e.g. "-sVoX"), so any 'o' in the
+    bundle followed by an output letter is rejected too. Long options
+    are rejected even in abbreviated form, because Nmap may accept an
+    unambiguous prefix as the full option. Callers that accept
+    arguments from untrusted sources must allowlist them first.
+    """
     if not arguments or not arguments.strip():
         raise NmapScanError("Custom scan arguments must not be empty.")
     try:
@@ -80,6 +123,28 @@ def validate_scan_args(arguments: str) -> list[str]:
                 f"Scan argument {token!r} is not allowed: this tool writes "
                 "the XML output itself, so Nmap output options are rejected."
             )
+        if token.startswith("--") and any(
+            token == prefix
+            or token.startswith(prefix + "=")
+            or prefix.startswith(token)
+            for prefix in _BLOCKED_LONG_PREFIXES
+        ):
+            raise NmapScanError(
+                f"Scan argument {token!r} is not allowed: this tool writes "
+                "the XML output itself, so Nmap output options are rejected."
+            )
+        if token.startswith("-") and not token.startswith("--"):
+            chars = token[1:]
+            for i, ch in enumerate(chars):
+                if (
+                    ch == "o"
+                    and i + 1 < len(chars)
+                    and chars[i + 1] in _OUTPUT_LETTERS
+                ):
+                    raise NmapScanError(
+                        f"Scan argument {token!r} is not allowed: this tool writes "
+                        "the XML output itself, so Nmap output options are rejected."
+                    )
     return tokens
 
 
@@ -106,9 +171,11 @@ def resolve_arguments(
                 "script scanning, and traceroute against this target."
             )
         return scan_args
-    if profile not in PROFILES:
+    if profile not in PROFILES and profile != "default":
         raise NmapScanError(
-            f"Unknown scan profile {profile!r}; expected one of: {', '.join(PROFILES)}."
+            "Unknown scan profile {!r}; expected one of: default, {}.".format(
+                profile, ", ".join(PROFILES)
+            )
         )
     if profile == "aggressive" and not confirm_aggressive:
         raise NmapScanError(
@@ -120,9 +187,7 @@ def resolve_arguments(
         if privileged is None:
             privileged = is_privileged()
         return "-sS" if privileged else "-sT"
-    profile_args = PROFILES[profile]
-    assert profile_args is not None  # default/aggressive handled above
-    return profile_args
+    return PROFILES[profile]
 
 
 def dry_run_command(target: str, arguments: str, ports: str | None = None) -> str:
@@ -136,7 +201,7 @@ def dry_run_command(target: str, arguments: str, ports: str | None = None) -> st
 
 def _default_scanner():
     try:
-        import nmap
+        import nmap  # type: ignore[import-untyped]
     except ImportError as exc:
         raise NmapScanError(
             "The 'python-nmap' package is required to run scans. "
@@ -159,17 +224,25 @@ def run_scan(
     arguments: str,
     ports: str | None = None,
     timeout: int = 0,
-    scanner_factory: Callable[[], object] | None = None,
+    scanner_factory: Callable[[], Scanner] | None = None,
 ) -> ScanRun:
     """Run one scan and return its raw XML output."""
     if not target or not target.strip():
         raise NmapScanError("A scan target is required.")
+    if timeout < 0:
+        raise NmapScanError(f"Scan timeout must not be negative: {timeout}.")
     validate_scan_args(arguments)
     scanner = scanner_factory() if scanner_factory is not None else _default_scanner()
     try:
         scanner.scan(hosts=target, ports=ports, arguments=arguments, timeout=timeout)
     except Exception as exc:
-        raise NmapScanError(f"Nmap scan failed: {exc}") from exc
+        # Name the target and port spec: "Nmap scan failed" alone does
+        # not tell the operator which scan failed.
+        raise NmapScanError(
+            f"Nmap scan failed for target {target!r}"
+            + (f" on ports {ports!r}" if ports else "")
+            + f": {exc}"
+        ) from exc
     try:
         raw = scanner.get_nmap_last_output()
     except Exception as exc:
@@ -192,10 +265,32 @@ def run_scan(
     )
 
 
-def write_xml(xml_text: str, output: Union[str, Path]) -> Path:
-    """Write raw XML, creating parent directories as needed."""
-    path = Path(output)
+def _ensure_parent(path: Path) -> None:
     if path.parent != Path("."):
         path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(xml_text, encoding="utf-8")
+
+
+def write_text_file(text: str, output: str | Path) -> Path:
+    """Write text to a file, creating parent directories as needed."""
+    path = Path(output)
+    _ensure_parent(path)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def write_xml(xml_text: str, output: str | Path) -> Path:
+    """Write raw XML atomically: temp file in the same directory, then replace.
+
+    Why atomic: a partial XML file is indistinguishable from a corrupt
+    scan on the next parse. Replacing, rather than truncating in place,
+    means readers see either the old file or the complete new one. A
+    stray `.tmp` file may remain if the process is killed between the
+    write and the replace; that is better than a truncated scan file,
+    and `*.tmp` is gitignored.
+    """
+    path = Path(output)
+    _ensure_parent(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(xml_text, encoding="utf-8")
+    tmp.replace(path)
     return path
